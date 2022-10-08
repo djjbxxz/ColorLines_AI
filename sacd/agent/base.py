@@ -5,7 +5,7 @@ import tensorflow as tf
 import config
 from sacd.utils import RunningMeanStats
 from reverb_memory import Memory
-
+import threading
 class BaseAgent(ABC,object):
 
     def __init__(self, env, test_env, log_dir, num_steps=100000, batch_size=64,
@@ -55,7 +55,20 @@ class BaseAgent(ABC,object):
         self.log_interval = log_interval
         self.eval_interval = eval_interval
 
+    def fit(self):
+        while(True):
+            self.learn()
+            if self.steps >self.start_steps and self.learning_steps % self.target_update_interval == 0:
+                self.update_target()
+
+            if self.learning_steps % self.eval_interval == 0:
+                self.evaluate()
+                self.save_models(os.path.join(self.model_dir, 'final'))
+
+
     def run(self):
+        t = threading.Thread(target=self.fit)
+        t.start()
         while True:
             self.train_episode()
             if self.steps > self.num_steps:
@@ -129,15 +142,6 @@ class BaseAgent(ABC,object):
             episode_return += reward
             state = next_state
 
-            if self.is_update():
-                self.learn()
-
-            if self.steps % self.target_update_interval == 0:
-                self.update_target()
-
-            if self.steps % self.eval_interval == 0:
-                self.evaluate()
-                self.save_models(os.path.join(self.model_dir, 'final'))
 
         self.memory.append(state, action, reward, done)
 
@@ -146,8 +150,9 @@ class BaseAgent(ABC,object):
         self.train_return.append(episode_return)
 
         if self.episodes % self.log_interval == 0:
-            self.writer.add_scalar(
-                'reward/train', self.train_return.get(), self.steps)
+            with self.writer.as_default(self.steps):
+                tf.summary.scalar('reward/train', self.train_return.get())
+                self.writer.flush()
 
             print(f'Episode: {self.episodes:<4}  '
                   f'Episode steps: {episode_steps:<4}  '
@@ -166,7 +171,7 @@ class BaseAgent(ABC,object):
             while (not done) and episode_steps <= self.max_episode_steps:
                 action = self.exploit(state)
                 next_state, reward, done = self.test_env.step(action)
-                time_steps.append([state, action, reward])
+                # time_steps.append([state, action, reward])
                 num_steps += 1
                 episode_steps += 1
                 episode_return += reward

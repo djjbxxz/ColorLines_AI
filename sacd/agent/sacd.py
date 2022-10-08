@@ -3,12 +3,22 @@ import config
 import numpy as np
 from tensorflow.keras.optimizers import Adam
 from .base import BaseAgent
-from sacd.model import TwinnedQNetwork, CateoricalPolicy
+from sacd.model import TwinnedQNetwork, ActorNetwork
 from sacd.utils import disable_gradients
 import time
 import tensorflow as tf
 from sacd.utils import update_params
 
+from tf_agents.agents import data_converter
+from tf_agents.agents import tf_agent
+from tf_agents.networks import network
+from tf_agents.policies import actor_policy
+from tf_agents.policies import ou_noise_policy
+from tf_agents.trajectories import time_step as ts
+from tf_agents.typing import types
+from tf_agents.utils import common
+from tf_agents.utils import eager_utils
+from tf_agents.utils import nest_utils
 
 class SacdAgent(BaseAgent):
 
@@ -27,7 +37,7 @@ class SacdAgent(BaseAgent):
 
         with self.device:
             # Define networks.
-            self.policy = CateoricalPolicy(config.POTENTIAL_MOVE_NUM)
+            self.policy = ActorNetwork(config.POTENTIAL_MOVE_NUM)
             self.online_critic = TwinnedQNetwork(
                 config.POTENTIAL_MOVE_NUM, dueling_net=dueling_net)
             self.target_critic = TwinnedQNetwork(
@@ -97,16 +107,16 @@ class SacdAgent(BaseAgent):
     def explore(self, state):
         # Act with randomness.
         state = tf.expand_dims(state, axis=0)
-        with tf.stop_gradient():
-            action, _, _ = self.policy.sample(state)
-        return action.item()
+        # with tf.stop_gradient():
+        action, _, _ = self.policy.sample(state)
+        return action.numpy()
 
     def exploit(self, state):
         # Act without randomness.
         state = tf.expand_dims(state, axis=0)
-        with tf.stop_gradient():
-            action = self.policy.act(state)
-        return action.item()
+        # with tf.stop_gradient():
+        action = self.policy.act(state)
+        return action.numpy()[0]
 
     def update_target(self):
         self.target_critic.set_weights(self.online_critic.get_weights())
