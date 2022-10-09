@@ -6,8 +6,8 @@ from Env import ColorLineEnv
 from agent import SacdAgent
 from utils import reduce_gpu_memory_usage, suppress_warning
 from sacd.model import *
-from tf_agents.environments import py_environment, tf_py_environment, tf_environment
-
+from tf_agents.environments import py_environment, tf_py_environment, tf_environment, batched_py_environment
+import config as _config
 from tf_agents.metrics import py_metrics
 from tf_agents.metrics import tf_metrics
 from tf_agents.drivers import py_driver
@@ -25,10 +25,16 @@ def run(args):
         config = yaml.load(f, Loader=yaml.SafeLoader)
 
     # Create environments.
-
     # ColorLineEnv =tf_env = tf_py_environment.TFPyEnvironment(env)
-    env = ColorLineEnv()
+    # env = ColorLineEnv()
     # env = tf_py_environment.TFPyEnvironment(env)
+    env = tf_py_environment.TFPyEnvironment(
+        batched_py_environment.BatchedPyEnvironment(
+            [ColorLineEnv()for _ in range(_config.batch_size)],
+            multithreading=False
+        ),
+        isolation=False
+    )
     test_env = ColorLineEnv()
     # test_env = tf_py_environment.TFPyEnvironment(test_env)
 
@@ -59,36 +65,13 @@ def run(args):
 
     )
 
-    batch_size = 32
-    max_length = 1000
+    replay_buffer = Replay_buffer(train_env=env, agent=agent)
 
-    # replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
-    #     agent.collect_data_spec,
-    #     batch_size=batch_size,
-    #     max_length=max_length)
-
-    # tf_policy = random_tf_policy.RandomTFPolicy(action_spec=tf_env.action_spec(),
-    #                                             time_step_spec=tf_env.time_step_spec())
-
-    replay_buffer = Replay_buffer(train_env=env,agent = agent)
-    # num_episodes = tf_metrics.NumberOfEpisodes()
-    # env_steps = tf_metrics.EnvironmentSteps()
-    # observers = [num_episodes, env_steps,replay_buffer.add_batch]
-    # driver = dynamic_episode_driver.DynamicEpisodeDriver(
-    #     env, agent.collect_policy, observers, num_episodes=3)
-
-    # Initial driver.run will reset the environment and initialize the policy.
-
-    for _ in range(3):
-        replay_buffer.collect(10)
-        data,_ = next(replay_buffer.iterator)
-        # final_time_step, policy_state = driver.run()
-        # sample,_ = replay_buffer.get_next(sample_batch_size=batch_size, num_steps=2)
+    for i in range(3000):
+        replay_buffer.collect()
+        data, _ = next(replay_buffer.iterator)
         agent.train(data)
-
-    if args.load != '':
-        agent.load_models(args.load)
-    agent.run()
+        print(i)
 
 
 if __name__ == '__main__':
