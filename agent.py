@@ -45,19 +45,10 @@ from tf_agents.utils import eager_utils
 from tf_agents.utils import nest_utils
 from tf_agents.utils import object_identity
 from tf_agents.policies.greedy_policy import GreedyPolicy
-from tf_agents.policies.actor_policy import ActorPolicy
-
-
+from tf_agents.metrics import tf_metrics
+from tf_agents.eval import metric_utils
 SacLossInfo = collections.namedtuple(
     'SacLossInfo', ('critic_loss', 'actor_loss', 'alpha_loss'))
-
-
-# TODO(b/148889463): deprecate std_clip_transform
-@gin.configurable
-def std_clip_transform(stddevs: types.NestedTensor) -> types.NestedTensor:
-    stddevs = tf.nest.map_structure(lambda t: tf.clip_by_value(t, -20, 2),
-                                    stddevs)
-    return tf.exp(stddevs)
 
 
 @gin.configurable
@@ -86,6 +77,9 @@ class SacdAgent(tf_agent.TFAgent):
                  gamma: types.Float = 1.0,
                  reward_scale_factor: types.Float = 1.0,
                  initial_log_alpha: types.Float = 0.0,
+                 log_interval: types.Int = 10,
+                 eval_interval: types.Int = 300,
+                 eval_num_episode: types.Int = 100,
                  use_log_alpha_in_alpha_loss: bool = True,
                  target_entropy: Optional[types.Float] = None,
                  gradient_clipping: Optional[types.Float] = None,
@@ -241,7 +235,9 @@ class SacdAgent(tf_agent.TFAgent):
         self._summarize_grads_and_vars = summarize_grads_and_vars
         self._update_target = self._get_target_updater(
             tau=self._target_update_tau, period=self._target_update_period)
-
+        self._log_interval = log_interval
+        self._eval_interval = eval_interval
+        self._eval_num_episode = eval_num_episode
         train_sequence_length = 2 if not critic_network.state_spec else None
 
         super(SacdAgent, self).__init__(
@@ -271,7 +267,8 @@ class SacdAgent(tf_agent.TFAgent):
         # Note that the original default entropy target is -dim(A) in the SAC paper.
         # However this formulation has also been used in practice by the original
         # authors and has in our experience been more stable for gym/mujoco.
-        target_entropy = -np.log(1.0 / (action_spec.maximum-action_spec.minimum+1))
+        target_entropy = - \
+            np.log(1.0 / (action_spec.maximum-action_spec.minimum+1))
         return target_entropy
 
     def _initialize(self):
@@ -355,13 +352,7 @@ class SacdAgent(tf_agent.TFAgent):
         self._apply_gradients(alpha_grads, alpha_variable,
                               self._alpha_optimizer)
 
-        with tf.name_scope('Losses'):
-            tf.compat.v2.summary.scalar(
-                name='critic_loss', data=critic_loss, step=self.train_step_counter)
-            tf.compat.v2.summary.scalar(
-                name='actor_loss', data=actor_loss, step=self.train_step_counter)
-            tf.compat.v2.summary.scalar(
-                name='alpha_loss', data=alpha_loss, step=self.train_step_counter)
+        self._print_log(critic_loss, actor_loss, alpha_loss)
 
         self.train_step_counter.assign_add(1)
         self._update_target()
@@ -413,11 +404,11 @@ class SacdAgent(tf_agent.TFAgent):
         tf.debugging.check_numerics(alpha_loss, 'Alpha loss is inf or nan.')
 
         with tf.name_scope('Losses'):
-            tf.compat.v2.summary.scalar(
+            tf.summary.scalar(
                 name='critic_loss', data=critic_loss, step=self.train_step_counter)
-            tf.compat.v2.summary.scalar(
+            tf.summary.scalar(
                 name='actor_loss', data=actor_loss, step=self.train_step_counter)
-            tf.compat.v2.summary.scalar(
+            tf.summary.scalar(
                 name='alpha_loss', data=alpha_loss, step=self.train_step_counter)
 
         total_loss = critic_loss + actor_loss + alpha_loss
@@ -553,9 +544,9 @@ class SacdAgent(tf_agent.TFAgent):
 
             pred_input = (time_steps.observation)
             pred_td_targets1, _ = self._critic_network_1(
-                pred_input, step_type=time_steps.step_type, training=training,action=actions)
+                pred_input, step_type=time_steps.step_type, training=training, action=actions)
             pred_td_targets2, _ = self._critic_network_2(
-                pred_input, step_type=time_steps.step_type, training=training,action=actions)
+                pred_input, step_type=time_steps.step_type, training=training, action=actions)
             critic_loss1 = td_errors_loss_fn(td_targets, pred_td_targets1)
             critic_loss2 = td_errors_loss_fn(td_targets, pred_td_targets2)
             critic_loss = critic_loss1 + critic_loss2
@@ -600,9 +591,9 @@ class SacdAgent(tf_agent.TFAgent):
             target_input = (time_steps.observation)
             # We do not update critic during actor loss.
             target_q_values1, _ = self._critic_network_1(
-                target_input, step_type=time_steps.step_type, training=False,action = actions)
+                target_input, step_type=time_steps.step_type, training=False, action=actions)
             target_q_values2, _ = self._critic_network_2(
-                target_input, step_type=time_steps.step_type, training=False,action = actions)
+                target_input, step_type=time_steps.step_type, training=False, action=actions)
             target_q_values = tf.minimum(target_q_values1, target_q_values2)
             actor_loss = tf.exp(self._log_alpha) * log_pi - target_q_values
             if actor_loss.shape.rank > 1:
@@ -690,7 +681,7 @@ class SacdAgent(tf_agent.TFAgent):
 
             common.generate_tensor_summaries('log_pi', log_pi,
                                              self.train_step_counter)
-            tf.compat.v2.summary.scalar(
+            tf.summary.scalar(
                 name='entropy_avg',
                 data=-tf.reduce_mean(input_tensor=log_pi),
                 step=self.train_step_counter)
@@ -726,5 +717,41 @@ class SacdAgent(tf_agent.TFAgent):
             common.generate_tensor_summaries('entropy_diff', entropy_diff,
                                              self.train_step_counter)
 
-            tf.compat.v2.summary.scalar(
+            tf.summary.scalar(
                 name='log_alpha', data=self._log_alpha, step=self.train_step_counter)
+
+    def _print_log(self, critic_loss, actor_loss, alpha_loss):
+        if self.train_step_counter % self._log_interval == 0:
+            with tf.name_scope('Losses'):
+                tf.summary.scalar(
+                    name='critic_loss', data=critic_loss, step=self.train_step_counter)
+                tf.summary.scalar(
+                    name='actor_loss', data=actor_loss, step=self.train_step_counter)
+                tf.summary.scalar(
+                    name='alpha_loss', data=alpha_loss, step=self.train_step_counter)
+
+    def eval(self, eval_env):
+        if self._train_step_counter % self._eval_interval == 0:
+            average_episode_length = tf_metrics.AverageEpisodeLengthMetric()
+            average_return = tf_metrics.AverageReturnMetric()
+            number_episodes = tf_metrics.NumberOfEpisodes()
+            observers = [average_episode_length,
+                         average_return, number_episodes]
+            metric_utils.compute(observers, eval_env,
+                                 self._greedy_policy, self._eval_num_episode)
+
+            average_episode_length = average_episode_length.result()
+            average_return = average_return.result()
+            number_episodes = number_episodes.result()
+
+            with tf.name_scope('Eval'):
+                tf.summary.scalar(
+                    name='average_episode_length', data=average_episode_length, step=self.train_step_counter)
+                tf.summary.scalar(
+                    name='average_return', data=average_return, step=self.train_step_counter)
+                tf.summary.scalar(
+                    name='number_episodes', data=number_episodes, step=self.train_step_counter)
+
+            print(f'average_episode_length:{average_episode_length}')
+            print(f'average_return:{average_return}')
+            print(f'number_episodes:{number_episodes}')

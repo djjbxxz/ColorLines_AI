@@ -1,11 +1,9 @@
-from utils import convert_6561_to_coord, isDebug, parse_9928_to_gamemap_next3, parse_9928_to_gamemap_next3_WHC, isDebug
+from utils import convert_6561_to_coord, isDebug, parse_9928_to_gamemap_next3, parse_9928_to_gamemap_next3_WHC, isDebug, parse_9928_to_gamemap_next3_CWH
 import config
 import numpy as np
 import matplotlib.patches as mpathes
 from matplotlib.widgets import Button
 import matplotlib.pyplot as plt
-from cmath import exp
-from ctypes import util
 import matplotlib as mpl
 mpl.use('TkAgg')
 mpl.rcParams['toolbar'] = 'None'
@@ -75,7 +73,7 @@ def show_episode(episode: list):
 
 class Board:
 
-    def __init__(self, game_map, next_three=None, score=None, real_move=None, fig=None, ax=None,call_show=True):
+    def __init__(self, game_map, next_three=None, score=None, real_move=None, fig=None, ax=None, call_show=True):
         self.game_map = game_map
         self.next_three = next_three
         self.score = score
@@ -217,13 +215,14 @@ class Episode(Board):
         self.button2 = Button(ax2, "next")
         self.button2.on_clicked(self.get_next)
 
-    def flush(self,call_show):
+    def flush(self, call_show):
         traj = self.episode[self.show_index]
         game_map, next_three = parse_9928_to_gamemap_next3_CWH(
             traj[0])
         score = traj[2]
         real_move = traj[1]
-        super().__init__(game_map, next_three, score, real_move, self.fig, self.ax,call_show=call_show)
+        super().__init__(game_map, next_three, score,
+                         real_move, self.fig, self.ax, call_show=call_show)
 
     def clear_ax(self):
         plt.axes(self.ax)
@@ -238,7 +237,6 @@ class Episode(Board):
         self.show_index -= 1
         self.flush(False)
         plt.draw()
-        
 
     def get_next(self, event):
         if self.show_index == self.len-1:

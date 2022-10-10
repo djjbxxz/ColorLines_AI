@@ -6,14 +6,8 @@ from Env import ColorLineEnv
 from agent import SacdAgent
 from utils import reduce_gpu_memory_usage, suppress_warning
 from sacd.model import *
-from tf_agents.environments import py_environment, tf_py_environment, tf_environment, batched_py_environment
+from tf_agents.environments import tf_py_environment, batched_py_environment
 import config as _config
-from tf_agents.metrics import py_metrics
-from tf_agents.metrics import tf_metrics
-from tf_agents.drivers import py_driver
-from tf_agents.drivers import dynamic_episode_driver
-from tf_agents.replay_buffers import py_uniform_replay_buffer
-from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from Myreplay_buffer import Replay_buffer
 from show import show_Board
 suppress_warning()
@@ -24,10 +18,7 @@ def run(args):
     with open(args.config) as f:
         config = yaml.load(f, Loader=yaml.SafeLoader)
 
-    # Create environments.
-    # ColorLineEnv =tf_env = tf_py_environment.TFPyEnvironment(env)
-    # env = ColorLineEnv()
-    # env = tf_py_environment.TFPyEnvironment(env)
+
     env = tf_py_environment.TFPyEnvironment(
         batched_py_environment.BatchedPyEnvironment(
             [ColorLineEnv()for _ in range(_config.batch_size)],
@@ -36,7 +27,7 @@ def run(args):
         isolation=False
     )
     test_env = ColorLineEnv()
-    # test_env = tf_py_environment.TFPyEnvironment(test_env)
+    test_env = tf_py_environment.TFPyEnvironment(test_env)
 
     # Specify the directory to log.
     name = args.config.split('/')[-1].rstrip('.yaml')
@@ -44,7 +35,7 @@ def run(args):
         name = 'shared-' + name
     time = datetime.now().strftime("%Y%m%d-%H%M")
     log_dir = os.path.join(
-        'logs', args.env_id, f'{name}-seed{args.seed}-{time}')
+        'logs', f'{time}')
 
     # Create the agent.
 
@@ -62,16 +53,17 @@ def run(args):
         actor_optimizer=tf.compat.v1.train.AdamOptimizer(0.001),
         critic_optimizer=tf.compat.v1.train.AdamOptimizer(0.001),
         alpha_optimizer=tf.compat.v1.train.AdamOptimizer(0.001),
-
+        log_interval=5
     )
-
     replay_buffer = Replay_buffer(train_env=env, agent=agent)
-
-    for i in range(3000):
-        replay_buffer.collect()
-        data, _ = next(replay_buffer.iterator)
-        agent.train(data)
-        print(i)
+    test_summary_writer = tf.summary.create_file_writer(log_dir)
+    with test_summary_writer.as_default():
+        for i in range(3000):
+            replay_buffer.collect()
+            data, _ = next(replay_buffer.iterator)
+            agent.train(data)
+            print(i)
+            agent.eval(test_env)
 
 
 if __name__ == '__main__':
