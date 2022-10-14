@@ -25,6 +25,7 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+from time import time
 from typing import Callable, Optional, Text
 
 import gin
@@ -45,8 +46,10 @@ from tf_agents.utils import eager_utils
 from tf_agents.utils import nest_utils
 from tf_agents.utils import object_identity
 from tf_agents.policies.greedy_policy import GreedyPolicy
+from tf_agents.policies.random_tf_policy import RandomTFPolicy
 from tf_agents.metrics import tf_metrics
 from tf_agents.eval import metric_utils
+import tensorflow_probability as tfp
 SacLossInfo = collections.namedtuple(
     'SacLossInfo', ('critic_loss', 'actor_loss', 'alpha_loss'))
 
@@ -61,7 +64,8 @@ class SacdAgent(tf_agent.TFAgent):
                  critic_network: network.Network,
                  actor_network: network.Network,
                  actor_optimizer: types.Optimizer,
-                 critic_optimizer: types.Optimizer,
+                 critic_optimizer1: types.Optimizer,
+                 critic_optimizer2: types.Optimizer,
                  alpha_optimizer: types.Optimizer,
                  actor_loss_weight: types.Float = 1.0,
                  critic_loss_weight: types.Float = 0.5,
@@ -71,17 +75,16 @@ class SacdAgent(tf_agent.TFAgent):
                  critic_network_2: Optional[network.Network] = None,
                  target_critic_network: Optional[network.Network] = None,
                  target_critic_network_2: Optional[network.Network] = None,
-                 target_update_tau: types.Float = 1.0,
-                 target_update_period: types.Int = 1,
+                 target_update_tau: types.Float = 0.85,
+                 target_update_period: types.Int = 1000,
                  td_errors_loss_fn: types.LossFn = tf.math.squared_difference,
-                 gamma: types.Float = 1.0,
+                 gamma: types.Float = 0.99,
                  reward_scale_factor: types.Float = 1.0,
                  initial_log_alpha: types.Float = 0.0,
-                 log_interval: types.Int = 10,
-                 eval_interval: types.Int = 300,
-                 eval_num_episode: types.Int = 100,
-                 use_log_alpha_in_alpha_loss: bool = True,
-                 target_entropy: Optional[types.Float] = None,
+                 log_interval: types.Int = 100,
+                 eval_interval: types.Int = 1000,
+                 eval_num_episode: types.Int = 50,
+                 target_entropy_ratio: Optional[types.Float] = 0.6,
                  gradient_clipping: Optional[types.Float] = None,
                  debug_summaries: bool = False,
                  summarize_grads_and_vars: bool = False,
@@ -147,8 +150,6 @@ class SacdAgent(tf_agent.TFAgent):
         """
         tf.Module.__init__(self, name=name)
 
-        # self._check_action_spec(action_spec)
-
         net_observation_spec = time_step_spec.observation
         critic_spec = (net_observation_spec)
 
@@ -195,6 +196,10 @@ class SacdAgent(tf_agent.TFAgent):
             training=False)
 
         )
+        
+        self._random_policy = RandomTFPolicy(
+            time_step_spec=time_step_spec,
+            action_spec=action_spec)
 
         sample_policy = actor_policy_ctor(
             time_step_spec=time_step_spec,
@@ -214,14 +219,14 @@ class SacdAgent(tf_agent.TFAgent):
             dtype=tf.float32,
             trainable=True)
 
-        if target_entropy is None:
-            target_entropy = self._get_default_target_entropy(action_spec)
+        target_entropy = self._get_default_target_entropy(
+            action_spec)*target_entropy_ratio
 
-        self._use_log_alpha_in_alpha_loss = use_log_alpha_in_alpha_loss
         self._target_update_tau = target_update_tau
         self._target_update_period = target_update_period
         self._actor_optimizer = actor_optimizer
-        self._critic_optimizer = critic_optimizer
+        self._critic_optimizer1 = critic_optimizer1
+        self._critic_optimizer2 = critic_optimizer2
         self._alpha_optimizer = alpha_optimizer
         self._actor_loss_weight = actor_loss_weight
         self._critic_loss_weight = critic_loss_weight
@@ -254,19 +259,7 @@ class SacdAgent(tf_agent.TFAgent):
         self._as_transition = data_converter.AsTransition(
             self.data_context, squeeze_time_dim=(train_sequence_length == 2))
 
-    def _check_action_spec(self, action_spec):
-        flat_action_spec = tf.nest.flatten(action_spec)
-        for spec in flat_action_spec:
-            if spec.dtype.is_integer:
-                raise NotImplementedError(
-                    'SacAgent does not currently support discrete actions. '
-                    'Action spec: {}'.format(action_spec))
-
     def _get_default_target_entropy(self, action_spec):
-        # If target_entropy was not passed, set it to -dim(A)/2.0
-        # Note that the original default entropy target is -dim(A) in the SAC paper.
-        # However this formulation has also been used in practice by the original
-        # authors and has in our experience been more stable for gym/mujoco.
         target_entropy = - \
             np.log(1.0 / (action_spec.maximum-action_spec.minimum+1))
         return target_entropy
@@ -302,19 +295,22 @@ class SacdAgent(tf_agent.TFAgent):
           ValueError: If optimizers are None and no default value was provided to
             the constructor.
         """
+        self.inspect_input_data(experience)
         transition = self._as_transition(experience)
         time_steps, policy_steps, next_time_steps = transition
         actions = policy_steps.action
 
-        trainable_critic_variables = list(object_identity.ObjectIdentitySet(
-            self._critic_network_1.trainable_variables +
-            self._critic_network_2.trainable_variables))
+        batch_size = nest_utils.get_outer_shape(
+            time_steps, self._time_step_spec)[0]
+        if weights is None:
+            weights = tf.ones(shape=(batch_size,))
 
-        with tf.GradientTape(watch_accessed_variables=False) as tape:
-            assert trainable_critic_variables, ('No trainable critic variables to '
-                                                'optimize.')
-            tape.watch(trainable_critic_variables)
-            critic_loss = self._critic_loss_weight*self.critic_loss(
+        trainable_critic1_variables = self._critic_network_1.trainable_variables
+        trainable_critic2_variables = self._critic_network_2.trainable_variables
+        with tf.GradientTape(watch_accessed_variables=False, persistent=True) as tape:
+            tape.watch(trainable_critic1_variables)
+            tape.watch(trainable_critic2_variables)
+            critic_loss1, critic_loss2 = self.critic_loss(
                 time_steps,
                 actions,
                 next_time_steps,
@@ -323,19 +319,30 @@ class SacdAgent(tf_agent.TFAgent):
                 reward_scale_factor=self._reward_scale_factor,
                 weights=weights,
                 training=True)
+        # critic_loss1*=self._critic_loss_weight
+        # critic_loss2*=self._critic_loss_weight
 
-        tf.debugging.check_numerics(critic_loss, 'Critic loss is inf or nan.')
-        critic_grads = tape.gradient(critic_loss, trainable_critic_variables)
-        self._apply_gradients(critic_grads, trainable_critic_variables,
-                              self._critic_optimizer)
+        tf.debugging.check_numerics(
+            critic_loss1, 'Critic1 loss is inf or nan.')
+        tf.debugging.check_numerics(
+            critic_loss2, 'Critic2 loss is inf or nan.')
+        critic1_grads = tape.gradient(
+            critic_loss1, trainable_critic1_variables)
+        critic2_grads = tape.gradient(
+            critic_loss2, trainable_critic2_variables)
+        self._apply_gradients(critic1_grads, trainable_critic1_variables,
+                              self._critic_optimizer1)
+        self._apply_gradients(critic2_grads, trainable_critic2_variables,
+                              self._critic_optimizer2)
 
         trainable_actor_variables = self._actor_network.trainable_variables
         with tf.GradientTape(watch_accessed_variables=False) as tape:
             assert trainable_actor_variables, ('No trainable actor variables to '
                                                'optimize.')
             tape.watch(trainable_actor_variables)
-            actor_loss = self._actor_loss_weight*self.actor_loss(
+            actor_loss, entropies = self.actor_loss(
                 time_steps, weights=weights, training=True)
+            actor_loss *= self._actor_loss_weight
         tf.debugging.check_numerics(actor_loss, 'Actor loss is inf or nan.')
         actor_grads = tape.gradient(actor_loss, trainable_actor_variables)
         self._apply_gradients(actor_grads, trainable_actor_variables,
@@ -345,17 +352,19 @@ class SacdAgent(tf_agent.TFAgent):
         with tf.GradientTape(watch_accessed_variables=False) as tape:
             assert alpha_variable, 'No alpha variable to optimize.'
             tape.watch(alpha_variable)
-            alpha_loss = self._alpha_loss_weight * self.alpha_loss(
-                time_steps, weights=weights, training=True)
+            alpha_loss = self.alpha_loss(entropies=entropies, weights=weights)
+            alpha_loss *= self._alpha_loss_weight
         tf.debugging.check_numerics(alpha_loss, 'Alpha loss is inf or nan.')
         alpha_grads = tape.gradient(alpha_loss, alpha_variable)
         self._apply_gradients(alpha_grads, alpha_variable,
                               self._alpha_optimizer)
 
-        self._print_log(critic_loss, actor_loss, alpha_loss)
+        self._print_log(critic_loss1, critic_loss2, actor_loss, alpha_loss)
 
         self.train_step_counter.assign_add(1)
         self._update_target()
+
+        critic_loss = tf.reduce_mean([critic_loss1, critic_loss2])
 
         total_loss = critic_loss + actor_loss + alpha_loss
 
@@ -476,23 +485,11 @@ class SacdAgent(tf_agent.TFAgent):
     def _actions_and_log_probs(self, time_steps, training=False):
         """Get actions and corresponding log probabilities from policy."""
         # Get raw action distribution from policy, and initialize bijectors list.
-        batch_size = nest_utils.get_outer_shape(
-            time_steps, self._time_step_spec)[0]
-        policy_state = self._train_policy.get_initial_state(batch_size)
-        if training:
-            action_distribution = self._train_policy.distribution(
-                time_steps, policy_state=policy_state).action
-        else:
-            action_distribution = self._policy.distribution(
-                time_steps, policy_state=policy_state).action
+        states = time_steps.observation
+        actions, action_probs, log_action_probs = self._actor_network.sample(
+            states, training)
 
-        # Sample actions and log_pis from transformed distribution.
-        actions = tf.nest.map_structure(
-            lambda d: d.sample(), action_distribution)
-        log_pi = common.log_probability(action_distribution, actions,
-                                        self.action_spec)
-
-        return actions, log_pi
+        return actions, action_probs, log_action_probs
 
     def critic_loss(self,
                     time_steps: ts.TimeStep,
@@ -527,18 +524,20 @@ class SacdAgent(tf_agent.TFAgent):
                 next_time_steps, self.time_step_spec)
 
             # We do not update actor or target networks in critic loss.
-            next_actions, next_log_pis = self._actions_and_log_probs(next_time_steps,
-                                                                     training=False)
+            next_actions, action_probs, next_log_pis = self._actions_and_log_probs(next_time_steps,
+                                                                                   training=False)
             target_input = (next_time_steps.observation)
             target_q_values1, unused_network_state1 = self._target_critic_network_1(
-                target_input, step_type=next_time_steps.step_type, training=False, action=next_actions)
+                target_input, step_type=next_time_steps.step_type, training=False)
             target_q_values2, unused_network_state2 = self._target_critic_network_2(
-                target_input, step_type=next_time_steps.step_type, training=False, action=next_actions)
-            target_q_values = (
-                tf.minimum(target_q_values1, target_q_values2) -
-                tf.exp(self._log_alpha) * next_log_pis)
+                target_input, step_type=next_time_steps.step_type, training=False)
+            target_q_values = tf.stop_gradient(
+                tf.math.reduce_sum(
+                    action_probs * (
+                        tf.minimum(target_q_values1, target_q_values2) -
+                        tf.exp(self._log_alpha) * next_log_pis), axis=1))
 
-            td_targets = tf.stop_gradient(
+            td_targets = (
                 reward_scale_factor * next_time_steps.reward +
                 gamma * next_time_steps.discount * target_q_values)
 
@@ -547,26 +546,26 @@ class SacdAgent(tf_agent.TFAgent):
                 pred_input, step_type=time_steps.step_type, training=training, action=actions)
             pred_td_targets2, _ = self._critic_network_2(
                 pred_input, step_type=time_steps.step_type, training=training, action=actions)
+            td_error = tf.abs(pred_td_targets1-td_targets)
             critic_loss1 = td_errors_loss_fn(td_targets, pred_td_targets1)
             critic_loss2 = td_errors_loss_fn(td_targets, pred_td_targets2)
-            critic_loss = critic_loss1 + critic_loss2
+            # critic_loss = critic_loss1 + critic_loss2
 
-            if critic_loss.shape.rank > 1:
-                # Sum over the time dimension.
-                critic_loss = tf.reduce_sum(
-                    critic_loss, axis=range(1, critic_loss.shape.rank))
+            # Sum over the time dimension.
+            critic_loss1 = tf.reduce_mean(critic_loss1)
+            critic_loss2 = tf.reduce_mean(critic_loss2)
 
-            agg_loss = common.aggregate_losses(
-                per_example_loss=critic_loss,
-                sample_weight=weights,
-                regularization_loss=(self._critic_network_1.losses +
-                                     self._critic_network_2.losses))
-            critic_loss = agg_loss.total_loss
+            # agg_loss = common.aggregate_losses(
+            #     per_example_loss=critic_loss,
+            #     sample_weight=weights,
+            #     regularization_loss=(self._critic_network_1.losses +
+            #                          self._critic_network_2.losses))
+            # critic_loss = agg_loss.total_loss
 
             self._critic_loss_debug_summaries(td_targets, pred_td_targets1,
                                               pred_td_targets2)
 
-            return critic_loss
+            return critic_loss1, critic_loss2
 
     def actor_loss(self,
                    time_steps: ts.TimeStep,
@@ -586,33 +585,37 @@ class SacdAgent(tf_agent.TFAgent):
         with tf.name_scope('actor_loss'):
             nest_utils.assert_same_structure(time_steps, self.time_step_spec)
 
-            actions, log_pi = self._actions_and_log_probs(time_steps,
-                                                          training=training)
+            actions, action_probs, log_pi = self._actions_and_log_probs(time_steps,
+                                                                        training=training)
+
             target_input = (time_steps.observation)
             # We do not update critic during actor loss.
             target_q_values1, _ = self._critic_network_1(
-                target_input, step_type=time_steps.step_type, training=False, action=actions)
+                target_input, step_type=time_steps.step_type, training=False)
             target_q_values2, _ = self._critic_network_2(
-                target_input, step_type=time_steps.step_type, training=False, action=actions)
-            target_q_values = tf.minimum(target_q_values1, target_q_values2)
-            actor_loss = tf.exp(self._log_alpha) * log_pi - target_q_values
-            if actor_loss.shape.rank > 1:
-                # Sum over the time dimension.
-                actor_loss = tf.reduce_sum(
-                    actor_loss, axis=range(1, actor_loss.shape.rank))
-            reg_loss = self._actor_network.losses if self._actor_network else None
-            agg_loss = common.aggregate_losses(
-                per_example_loss=actor_loss,
-                sample_weight=weights,
-                regularization_loss=reg_loss)
-            actor_loss = agg_loss.total_loss
+                target_input, step_type=time_steps.step_type, training=False)
+            target_q_values = tf.math.reduce_sum(tf.minimum(
+                target_q_values1, target_q_values2)*action_probs, axis=1, keepdims=True)
+
+            entropies = -tf.math.reduce_sum(
+                action_probs * log_pi, axis=1, keepdims=True)
+
+            actor_loss = tf.math.reduce_mean(
+                weights*(- target_q_values-tf.exp(self._log_alpha) * entropies))
+
+            # reg_loss = self._actor_network.losses if self._actor_network else None
+            # agg_loss = common.aggregate_losses(
+            #     per_example_loss=actor_loss,
+            #     sample_weight=weights,
+            #     regularization_loss=reg_loss)
+            # actor_loss = agg_loss.total_loss
             self._actor_loss_debug_summaries(actor_loss, actions, log_pi,
                                              target_q_values, time_steps)
 
-            return actor_loss
+            return actor_loss, entropies
 
     def alpha_loss(self,
-                   time_steps: ts.TimeStep,
+                   entropies: types.Tensor,
                    weights: Optional[types.Tensor] = None,
                    training: bool = False) -> types.Tensor:
         """Computes the alpha_loss for EC-SAC training.
@@ -627,29 +630,28 @@ class SacdAgent(tf_agent.TFAgent):
           alpha_loss: A scalar alpha loss.
         """
         with tf.name_scope('alpha_loss'):
-            nest_utils.assert_same_structure(time_steps, self.time_step_spec)
+            # nest_utils.assert_same_structure(time_steps, self.time_step_spec)
 
-            # We do not update actor during alpha loss.
-            unused_actions, log_pi = self._actions_and_log_probs(
-                time_steps, training=False)
-            entropy_diff = tf.stop_gradient(-log_pi - self._target_entropy)
-            if self._use_log_alpha_in_alpha_loss:
-                alpha_loss = (self._log_alpha * entropy_diff)
-            else:
-                alpha_loss = (tf.exp(self._log_alpha) * entropy_diff)
+            # # We do not update actor during alpha loss.
+            # unused_actions, _, log_pi = self._actions_and_log_probs(
+            #     time_steps, training=False)
+            # entropy_diff = tf.stop_gradient(-log_pi - self._target_entropy)
+            # if self._use_log_alpha_in_alpha_loss:
+            #     alpha_loss = (self._log_alpha * entropy_diff)
+            # else:
+            #     alpha_loss = (tf.exp(self._log_alpha) * entropy_diff)
 
-            if alpha_loss.shape.rank > 1:
-                # Sum over the time dimension.
-                alpha_loss = tf.reduce_sum(
-                    alpha_loss, axis=range(1, alpha_loss.shape.rank))
+            entropy_loss = -tf.math.reduce_mean(
+                self._log_alpha * (self._target_entropy - entropies)
+                * weights)
 
-            agg_loss = common.aggregate_losses(
-                per_example_loss=alpha_loss, sample_weight=weights)
-            alpha_loss = agg_loss.total_loss
+            # agg_loss = common.aggregate_losses(
+            #     per_example_loss=alpha_loss, sample_weight=weights)
+            # alpha_loss = agg_loss.total_loss
 
-            self._alpha_loss_debug_summaries(alpha_loss, entropy_diff)
+            self._alpha_loss_debug_summaries(entropy_loss)
 
-            return alpha_loss
+            return entropy_loss
 
     def _critic_loss_debug_summaries(self, td_targets, pred_td_targets1,
                                      pred_td_targets2):
@@ -710,21 +712,21 @@ class SacdAgent(tf_agent.TFAgent):
             except NotImplementedError:
                 pass  # Some distributions do not have an analytic entropy.
 
-    def _alpha_loss_debug_summaries(self, alpha_loss, entropy_diff):
+    def _alpha_loss_debug_summaries(self, alpha_loss):
         if self._debug_summaries:
             common.generate_tensor_summaries('alpha_loss', alpha_loss,
-                                             self.train_step_counter)
-            common.generate_tensor_summaries('entropy_diff', entropy_diff,
                                              self.train_step_counter)
 
             tf.summary.scalar(
                 name='log_alpha', data=self._log_alpha, step=self.train_step_counter)
 
-    def _print_log(self, critic_loss, actor_loss, alpha_loss):
+    def _print_log(self, critic1_loss, critic2_loss, actor_loss, alpha_loss):
         if self.train_step_counter % self._log_interval == 0:
             with tf.name_scope('Losses'):
                 tf.summary.scalar(
-                    name='critic_loss', data=critic_loss, step=self.train_step_counter)
+                    name='critic1_loss', data=critic1_loss, step=self.train_step_counter)
+                tf.summary.scalar(
+                    name='critic2_loss', data=critic2_loss, step=self.train_step_counter)
                 tf.summary.scalar(
                     name='actor_loss', data=actor_loss, step=self.train_step_counter)
                 tf.summary.scalar(
@@ -755,3 +757,23 @@ class SacdAgent(tf_agent.TFAgent):
             print(f'average_episode_length:{average_episode_length}')
             print(f'average_return:{average_return}')
             print(f'number_episodes:{number_episodes}')
+
+    def inspect_input_data(self, data):
+        if self._train_step_counter % self._log_interval == 0:
+            actions = data.action
+            rewards = data.reward
+            variance = tfp.stats.variance(
+                tf.reshape(data.action, (-1)), sample_axis=0)
+            with tf.name_scope('Input_data'):
+                common.generate_tensor_summaries('action', actions,
+                                                 self.train_step_counter)
+                tf.summary.scalar(
+                    name='action_variance', data=variance, step=self.train_step_counter)
+                tf.summary.scalar(
+                    name='rewards_mean', data=tf.reduce_mean(rewards), step=self.train_step_counter)
+
+    def load(self):
+        pass
+
+    def save(self):
+        pass

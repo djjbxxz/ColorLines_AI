@@ -4,7 +4,7 @@ import argparse
 from datetime import datetime
 from Env import ColorLineEnv
 from agent import SacdAgent
-from utils import reduce_gpu_memory_usage, suppress_warning
+from utils import isDebug, reduce_gpu_memory_usage, suppress_warning
 from sacd.model import *
 from tf_agents.environments import tf_py_environment, batched_py_environment
 import config as _config
@@ -14,6 +14,8 @@ suppress_warning()
 reduce_gpu_memory_usage()
 
 
+
+
 def run(args):
     with open(args.config) as f:
         config = yaml.load(f, Loader=yaml.SafeLoader)
@@ -21,7 +23,7 @@ def run(args):
 
     env = tf_py_environment.TFPyEnvironment(
         batched_py_environment.BatchedPyEnvironment(
-            [ColorLineEnv()for _ in range(_config.batch_size)],
+            [ColorLineEnv()for _ in range(_config.gradient_step)],
             multithreading=False
         ),
         isolation=False
@@ -50,20 +52,31 @@ def run(args):
         action_spec=action_spec,
         critic_network=q_network,
         actor_network=policy_network,
-        actor_optimizer=tf.compat.v1.train.AdamOptimizer(0.001),
-        critic_optimizer=tf.compat.v1.train.AdamOptimizer(0.001),
-        alpha_optimizer=tf.compat.v1.train.AdamOptimizer(0.001),
-        log_interval=5
+        actor_optimizer=tf.compat.v1.train.AdamOptimizer(0.0001),
+        critic_optimizer1=tf.compat.v1.train.AdamOptimizer(0.0001),
+        critic_optimizer2=tf.compat.v1.train.AdamOptimizer(0.0001),
+        alpha_optimizer=tf.compat.v1.train.AdamOptimizer(0.0001),
+        log_interval=20
     )
     replay_buffer = Replay_buffer(train_env=env, agent=agent)
-    test_summary_writer = tf.summary.create_file_writer(log_dir)
-    with test_summary_writer.as_default():
-        for i in range(3000):
-            replay_buffer.collect()
+    replay_buffer.initial_fill_buffer(agent._random_policy,20000)
+    def train_loop():
+        for i in range(1000000):
+            replay_buffer.collect(1)
             data, _ = next(replay_buffer.iterator)
             agent.train(data)
             print(i)
             agent.eval(test_env)
+
+    if isDebug():
+        train_loop()
+    else:
+        test_summary_writer = tf.summary.create_file_writer(log_dir)
+        with test_summary_writer.as_default():
+            train_loop()
+
+
+
 
 
 if __name__ == '__main__':

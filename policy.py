@@ -166,14 +166,13 @@ class SamplePolicy(tf_policy.TFPolicy):
                 network_observation)
 
         # Actor network outputs nested structure of distributions or actions.
-        actions_or_distributions, policy_state = self._apply_actor_network(
+        action_probs, policy_state = self._apply_actor_network(
             network_observation, step_type=time_step.step_type,
             policy_state=policy_state, mask=mask)
 
-        action_probs = tf.math.softmax(actions_or_distributions, axis=1)
         # Avoid numerical instability.
-        action_probs = tf.clip_by_value(
-            action_probs, clip_value_min=1e-8, clip_value_max=action_probs.dtype.max)
+        # action_probs = tf.clip_by_value(
+        #     action_probs, clip_value_min=1e-8, clip_value_max=action_probs.dtype.max)
         dist = tfp.distributions.Categorical(
             probs=action_probs, dtype=self._action_spec.dtype)
 

@@ -5,6 +5,7 @@ from Env import ColorLineEnv
 from agent import SacdAgent
 from tf_agents.drivers import dynamic_step_driver
 from tf_agents.replay_buffers import tf_uniform_replay_buffer
+from tf_agents.policies.random_tf_policy import RandomTFPolicy
 
 
 class Replay_buffer():
@@ -16,15 +17,25 @@ class Replay_buffer():
         self.get_replay_buffer()
         self._last_timestep = None
 
+    def initial_fill_buffer(self,policy:RandomTFPolicy,num:int):
+        collect_driver = dynamic_step_driver.DynamicStepDriver(
+            self.train_env,
+            policy,
+            num_steps=num*2,
+            observers=[self.replay_buffer.add_batch]
+        )
+        collect_driver.run()
+
     def __thread_collect_data(self, collect_driver, train_env):
         assert self.multithread, 'No multithread mode'
         time_step = train_env.reset()
         while(True):
             time_step, _ = collect_driver.run(time_step)
 
-    def collect(self):
-        time_step, _ = self._driver.run(time_step=self._last_timestep)
-        self._last_timestep = time_step
+    def collect(self,num_batch):
+        for _ in range(num_batch):
+            time_step, _ = self._driver.run(time_step=self._last_timestep)
+            self._last_timestep = time_step
 
     @property
     def iterator(self) -> iter:
@@ -38,13 +49,13 @@ class Replay_buffer():
         agent = self.agent
         replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
             agent.collect_data_spec,
-            batch_size=config.batch_size,
+            batch_size=config.gradient_step,
             max_length=config.replay_buffer_max_length)
 
         collect_driver = dynamic_step_driver.DynamicStepDriver(
             self.train_env,
             agent.collect_policy,
-            num_steps=config.batch_size*2,
+            num_steps=2,
             observers=[replay_buffer.add_batch]
         )
 
