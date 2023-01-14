@@ -24,9 +24,9 @@ def run(args):
     env = tf_py_environment.TFPyEnvironment(
         batched_py_environment.BatchedPyEnvironment(
             [ColorLineEnv()for _ in range(_config.gradient_step)],
-            multithreading=False
+            multithreading=True
         ),
-        isolation=False
+        isolation=True
     )
     test_env = ColorLineEnv()
     test_env = tf_py_environment.TFPyEnvironment(test_env)
