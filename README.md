@@ -26,7 +26,10 @@ python3 train.py
 
 <img width="761" alt="result" src="https://user-images.githubusercontent.com/41796656/213947925-55341859-1d88-4891-ad27-f6fdfb122cfc.png">
 
-At the begining, the model learnt how to avoid making illgel move quickly within the first 100k iteration, but after that, the model seems to not making any progess in the following training iteration.
+Ps: negative rewards mean that the model is illegal making moves that are not allowed by the game rule.
+
+
+At the begining, the model learnt how to avoid making illgel move (learnt the basic rule) quickly within the first 100k iteration, but after that, the model seems to not making any progess in the following training iteration.
 
 The follwing image shows that the variance of actions made by the model dramaticlly drop as the training process going.
 <img width="759" alt="action variance" src="https://user-images.githubusercontent.com/41796656/213948256-156db940-244a-4a57-842f-ab13c7ff4b73.png">
@@ -38,9 +41,11 @@ Look at the action distribution collected in the training, the model is more lik
 
 Ps: There are 625 possible action in total in the case.
 
-### Possible factors:
-1) The entropy is not guiding the training.
+### My guess on what cause this:
+1) The entropy is not guiding the training properly.
 2) The model is overfitting.
+
+Don't worry! I am trying to fix this! :)
 
 ## Other
 
