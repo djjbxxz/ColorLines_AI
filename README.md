@@ -7,11 +7,14 @@ This repo is implemented based on Tensorflow framwork, and inspried by **[this](
 ```bash
 pip install -r requirements.txt
 ```
-For the game environment compilation, please refer to **[submodule repo](https://github.com/djjbxxz/ColorLine_Environment/tree/tensorflow)**.
+
+Game environment code is written in C++ to boost up training process.
+
+To compile the game env, please refer to the **[submodule repo](https://github.com/djjbxxz/ColorLine_Environment/tree/tensorflow)**.
 
 Don't forget to rename the compilated file to `gen_colorline_data_tensorflow`, with a suffix `.dll` in Windows, and `.so` in Linux.
 
-Then point the module import path in [Env.py](Env.py) to the directory of the env submodule.
+Then, point the game env module import path in [Env.py](Env.py) to the directory of the game env submodule.
 
 
 ## Training
