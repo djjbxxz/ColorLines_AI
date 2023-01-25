@@ -26,10 +26,10 @@ python3 train.py
 
 <img width="761" alt="result" src="https://user-images.githubusercontent.com/41796656/213947925-55341859-1d88-4891-ad27-f6fdfb122cfc.png">
 
-Ps: negative rewards mean that the model is illegal making moves that are not allowed by the game rule.
+Ps: negative rewards mean that the model is making illegal moves that are not allowed by the game rule.
 
 
-At the begining, the model learnt how to avoid making illgel move (learnt the basic rule) quickly within the first 100k iteration, but after that, the model seems to not making any progess in the following training iteration.
+At the begining, the model learnt how to avoid making illgel move (learned the basic game rule) quickly within the first 100k iteration, but after that, the model seems to not making any progess in the following training iteration.
 
 The follwing image shows that the variance of actions made by the model dramaticlly drop as the training process going.
 <img width="759" alt="action variance" src="https://user-images.githubusercontent.com/41796656/213948256-156db940-244a-4a57-842f-ab13c7ff4b73.png">
@@ -51,4 +51,5 @@ Don't worry! I am trying to fix this! :)
 
 I am a grad student in AI, and this is my first reinforcement learning project.
 
-The purpose I created this repo is to document my learning process. If you have any advice on this project, please create an issue. Any advice would be appreciated!
+The purpose I created this repo is to record my learning process, and document any mistakes I made. 
+If you have any advice on this project, please create an issue. Any advice would be appreciated!
