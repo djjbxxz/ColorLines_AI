@@ -1,4 +1,5 @@
 import os
+import shutil
 import yaml
 import argparse
 from datetime import datetime
@@ -8,23 +9,20 @@ from utils import isDebug, reduce_gpu_memory_usage, suppress_warning
 from sacd.model import *
 from tf_agents.environments import tf_py_environment, batched_py_environment
 import config as _config
+import train_config
 from Myreplay_buffer import Replay_buffer
 from show import show_Board
+import numpy as np
 suppress_warning()
 reduce_gpu_memory_usage()
 
 
-
-
 def run(args):
-    with open(args.config) as f:
-        config = yaml.load(f, Loader=yaml.SafeLoader)
-
 
     env = tf_py_environment.TFPyEnvironment(
         batched_py_environment.BatchedPyEnvironment(
             [ColorLineEnv()for _ in range(_config.gradient_step)],
-            multithreading=True
+            multithreading=False
         ),
         isolation=True
     )
@@ -37,7 +35,7 @@ def run(args):
         name = 'shared-' + name
     time = datetime.now().strftime("%Y%m%d-%H%M")
     log_dir = os.path.join(
-        'logs', f'{time}')
+        '/train_logs', f'{time}')
 
     # Create the agent.
 
@@ -46,37 +44,45 @@ def run(args):
     observation_spec = env.observation_spec()
     q_network = QNetwork(observation_spec, action_spec)
     policy_network = ActorNetwork(observation_spec)
-
+    lr = train_config.lr
     agent = SacdAgent(
         time_step_spec=time_step_spec,
         action_spec=action_spec,
         critic_network=q_network,
         actor_network=policy_network,
-        actor_optimizer=tf.compat.v1.train.AdamOptimizer(0.0001),
-        critic_optimizer1=tf.compat.v1.train.AdamOptimizer(0.0001),
-        critic_optimizer2=tf.compat.v1.train.AdamOptimizer(0.0001),
-        alpha_optimizer=tf.compat.v1.train.AdamOptimizer(0.0001),
-        log_interval=20
+        actor_optimizer=tf.compat.v1.train.AdamOptimizer(lr),
+        critic_optimizer1=tf.compat.v1.train.AdamOptimizer(lr),
+        critic_optimizer2=tf.compat.v1.train.AdamOptimizer(lr),
+        alpha_optimizer=tf.compat.v1.train.AdamOptimizer(lr),
+        save_dir=log_dir
     )
     replay_buffer = Replay_buffer(train_env=env, agent=agent)
-    replay_buffer.initial_fill_buffer(agent._random_policy,20000)
+
+    if len(args.load) > 0:
+        agent.load(
+            os.path.dirname(args.load),
+            os.path.basename(args.load)
+        )
+
     def train_loop():
-        for i in range(1000000):
+        replay_buffer.initial_fill_buffer(
+            agent._random_policy, train_config.init_fill)
+        for i in range(train_config.num_steps):
             replay_buffer.collect(1)
             data, _ = next(replay_buffer.iterator)
             agent.train(data)
-            print(i)
+            step = agent.train_step_counter.numpy()
+            print(
+                f"{step}/{train_config.num_steps}, {np.round(step/train_config.num_steps*100,2)}%")
             agent.eval(test_env)
 
     if isDebug():
         train_loop()
     else:
         test_summary_writer = tf.summary.create_file_writer(log_dir)
+        shutil.copy('train_config.py', log_dir+'/train_config.py')
         with test_summary_writer.as_default():
             train_loop()
-
-
-
 
 
 if __name__ == '__main__':

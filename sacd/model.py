@@ -20,16 +20,6 @@ def Dense(units, activation=None):
                         bias_initializer='zeros')
 
 
-preprocessing_layer = [
-    Conv(64, 3, activation="relu", padding="same"),
-    Conv(128, 3, activation="relu", padding="same"),
-    Conv(64, 3, activation="relu", padding="same"),
-    Conv(32, 3, activation="relu", padding="valid"),
-    Conv(32, 3, activation="relu", padding="valid"),
-    layers.Flatten(),
-]
-
-
 class BaseNetwork(keras.Model):
     def save(self, path):
         self.save_weights(path)

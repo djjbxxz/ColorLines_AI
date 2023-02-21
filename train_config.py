@@ -1,0 +1,13 @@
+num_steps= 800000
+batch_size= 64
+lr= 0.0003
+memory_size= 1000000
+init_fill = 20000
+gamma= 0.99
+target_entropy_ratio= 0.98
+update_interval= 4
+target_update_interval= 8000
+num_eval_steps= 80
+log_interval= 300
+eval_interval= 4000
+save_interval=1800
