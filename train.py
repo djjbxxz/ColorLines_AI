@@ -19,13 +19,7 @@ reduce_gpu_memory_usage()
 
 def run(args):
 
-    env = tf_py_environment.TFPyEnvironment(
-        batched_py_environment.BatchedPyEnvironment(
-            [ColorLineEnv()for _ in range(_config.gradient_step)],
-            multithreading=False
-        ),
-        isolation=True
-    )
+    env =ColorLineEnv()
     test_env = ColorLineEnv()
     test_env = tf_py_environment.TFPyEnvironment(test_env)
 
@@ -35,7 +29,7 @@ def run(args):
         name = 'shared-' + name
     time = datetime.now().strftime("%Y%m%d-%H%M")
     log_dir = os.path.join(
-        '/train_logs', f'{time}')
+        'train_logs', f'{time}')
 
     # Create the agent.
 
@@ -56,7 +50,7 @@ def run(args):
         alpha_optimizer=tf.compat.v1.train.AdamOptimizer(lr),
         save_dir=log_dir
     )
-    replay_buffer = Replay_buffer(train_env=env, agent=agent)
+    replay_buffer = Replay_buffer(train_env=env, agent=agent,update_interval=train_config.update_interval)
 
     if len(args.load) > 0:
         agent.load(
@@ -69,8 +63,9 @@ def run(args):
             agent._random_policy, train_config.init_fill)
         for i in range(train_config.num_steps):
             replay_buffer.collect(1)
-            data, _ = next(replay_buffer.iterator)
-            agent.train(data)
+            data, sample_info = next(replay_buffer.iterator)
+            loss_info = agent.train(data,weights = tf.cast(sample_info.priority[:,0],tf.float32))
+            replay_buffer.update_priorities(sample_info.key[:,0],loss_info.extra.error)
             step = agent.train_step_counter.numpy()
             print(
                 f"{step}/{train_config.num_steps}, {np.round(step/train_config.num_steps*100,2)}%")
