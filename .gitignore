@@ -5,3 +5,5 @@ __pycache__/
 *.out
 *.so
 train_logs
+log_reward_scale
+log_target_entropy

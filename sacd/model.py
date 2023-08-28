@@ -37,6 +37,8 @@ class DQNBase(BaseNetwork):
             [
                 Conv(64, 3, activation="relu", padding="same"),
                 Conv(128, 3, activation="relu", padding="same"),
+                Conv(256, 3, activation="relu", padding="same"),
+                Conv(128, 3, activation="relu", padding="same"),
                 Conv(64, 3, activation="relu", padding="same"),
                 Conv(32, 3, activation="relu", padding="valid"),
                 Conv(32, 3, activation="relu", padding="valid"),
@@ -56,13 +58,15 @@ class QNetwork(network.Network):
     def __init__(self,
                  observation_spec,
                  action_spec,
+                 dueling_net,
                  name='QNetwork'):
         # observation_spec = {observation_spec,tf.TensorSpec(shape=(), dtype=tf.int32)}
         super(QNetwork, self).__init__(
             input_tensor_spec=observation_spec, state_spec=(), name=name)
-
+        get_outer_rank = nest_utils.get_outer_rank
         # For simplicity we will only support a single action float output.
         self._action_spec = action_spec
+        self.duleing_net = dueling_net
         flat_action_spec = tf.nest.flatten(action_spec)
         if len(flat_action_spec) > 1:
             raise ValueError(
@@ -70,28 +74,41 @@ class QNetwork(network.Network):
         self._single_action_spec = flat_action_spec[0]
 
         self._base_layer = DQNBase()
-
-        self._post_layer = keras.Sequential([
-            Dense(256, 'relu'),
-            Dense(config.POTENTIAL_MOVE_NUM),
-        ])
+        if not dueling_net:
+            self._post_layer = keras.Sequential([
+                Dense(128, 'relu'),
+                Dense(config.POTENTIAL_MOVE_NUM),
+            ])
+        else:
+            self._a_head = keras.Sequential([
+                Dense(128, 'relu'),
+                Dense(config.POTENTIAL_MOVE_NUM),
+            ])
+            self._v_head = keras.Sequential([
+                Dense(128, 'relu'),
+                Dense(1),
+            ])
 
     def call(self, observations, training, network_state=(), action=None):
-        outer_rank = nest_utils.get_outer_rank(
-            observations, self.input_tensor_spec)
-        # We use batch_squash here in case the observations have a time sequence
-        # compoment.
-        batch_squash = utils.BatchSquash(outer_rank)
-        observations = tf.nest.map_structure(
-            batch_squash.flatten, observations)
+        # outer_rank = nest_utils.get_outer_rank(
+        #     observations, self.input_tensor_spec)
+        # # We use batch_squash here in case the observations have a time sequence
+        # # compoment.
+        # batch_squash = utils.BatchSquash(outer_rank)
+        # observations = tf.nest.map_structure(
+        #     batch_squash.flatten, observations)
 
         observations = tf.cast(observations, tf.float32)
         state = self._base_layer(observations, training)
-        pred_Q = self._post_layer(state, training)
+        if not self.duleing_net:
+            pred_Q = self._post_layer(state, training)
+        else:
+            pred_A = self._a_head(state, training)
+            pred_V = self._v_head(state, training)
+            pred_Q = pred_A + pred_V - tf.reduce_mean(pred_A, axis=1, keepdims=True)
 
         if not action is None:
             pred_Q = tf.gather(pred_Q, action, axis=1, batch_dims=1)
-
         return pred_Q, network_state
 
 
@@ -105,7 +122,7 @@ class ActorNetwork(network.Network):
         self.conv = DQNBase()
 
         self.head = keras.Sequential([
-            Dense(256, 'relu'),
+            Dense(128, 'relu'),
             Dense(config.POTENTIAL_MOVE_NUM),
             layers.Softmax()
         ])

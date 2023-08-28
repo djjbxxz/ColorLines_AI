@@ -132,3 +132,8 @@ def reduce_gpu_memory_usage():
     except:
         # Invalid device or cannot modify virtual devices once initialized.
         pass
+
+
+def get_current_pid():
+    import os
+    return os.getpid()
