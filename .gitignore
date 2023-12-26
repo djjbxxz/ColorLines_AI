@@ -7,3 +7,7 @@ __pycache__/
 train_logs
 log_reward_scale
 log_target_entropy
+*.sh
+misc/
+runs/
+*.png

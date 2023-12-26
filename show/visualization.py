@@ -1,17 +1,25 @@
-from utils import convert_6561_to_coord, isDebug, parse_9928_to_gamemap_next3, parse_9928_to_gamemap_next3_WHC, isDebug, parse_9928_to_gamemap_next3_CWH
+import sys
+sys.path.append('.')
+from show.utils import convert_6561_to_coord, convert_994_to_9928, convert_coord_to_6561, isDebug, parse_9928_to_gamemap_next3, parse_9928_to_gamemap_next3_WHC, isDebug, parse_9928_to_gamemap_next3_CWH
+from utils import isDebug
 import config
 import numpy as np
+import os
 import matplotlib.patches as mpathes
 from matplotlib.widgets import Button
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-mpl.use('TkAgg')
-mpl.rcParams['toolbar'] = 'None'
-if isDebug():
-    plt.ion()
+from matplotlib.patches import FancyArrowPatch
+from matplotlib.path import Path
+HEADLESS = os.environ.get('DISPLAY', '') == ''
+if not HEADLESS:
+    mpl.use('TkAgg')
+    mpl.rcParams['toolbar'] = 'None'
+    if isDebug():
+        plt.ion()
 Index2Color = {0: '#FFFFFF', 1: '#009C08', 2: '#ED1C24', 3: '#000084',
                4: '#B5A518', 5: '#18C6F7', 6: '#C618C6', 7: '#943100'}
-
+path_color = '#01C0F0'
 scale = 0.5
 
 
@@ -49,7 +57,7 @@ def show_transition(experience):
     pass
 
 
-def show_Board(observation, real_move=None, show_text: bool = True):
+def show_Board(observation, real_move=None, show_text: bool = True,score=None):
     if hasattr(observation, 'numpy'):
         observation = observation.numpy()
 
@@ -58,9 +66,30 @@ def show_Board(observation, real_move=None, show_text: bool = True):
     if show_text:
         print(f"game_map:\n{game_map}")
         print(f"next_three:{coming_chess}")
-    board = Board(game_map, coming_chess, real_move=real_move)
-    return board.fig, board.ax
-
+        board = Board(game_map, coming_chess, real_move=real_move,call_show=False,score=score)
+        if HEADLESS:
+            plt.savefig('board.png', dpi=250)
+            plt.close(board.fig)
+            print('board.png saved due to HEADLESS mode is on')
+        else:
+            plt.show()
+            plt.close(board.fig)
+            return board.fig, board.ax
+    
+def save_traj(trajectories, path:str, show_path_num:int = 1, show_probs:bool = False, show_score:bool = True):
+    '''`trajectories`should be a list of Trajectory'''
+    if not os.path.exists(path):
+        os.makedirs(path)
+    assert isinstance(trajectories, list), f"arg type {type(trajectories)} is invalid!"
+    score = 0
+    for i, trajectory in enumerate(trajectories):
+        game_map, coming_chess = parse_9928_to_gamemap_next3(trajectory.observation['observations'])
+        real_move =trajectory.policy_info['sorted_probs_index'][:show_path_num] if trajectory.step_type[0].numpy() != 2 else None
+        move_probs = trajectory.policy_info['sorted_probs'][:show_path_num] if trajectory.step_type[0].numpy() != 2 else None
+        score+=int(trajectories[i-1].reward[0].numpy())if i!=0 else 0
+        board = Board(game_map, coming_chess, real_move=real_move,score=score if show_score else None ,call_show=False, move_probs = move_probs if show_probs else None)
+        plt.savefig(path + f'/{i}.png', dpi=250)
+        plt.close(board.fig)
 
 def show_episode(episode: list):
     '''`episode`should be a list of Trajectory'''
@@ -73,11 +102,12 @@ def show_episode(episode: list):
 
 class Board:
 
-    def __init__(self, game_map, next_three=None, score=None, real_move=None, fig=None, ax=None, call_show=True):
+    def __init__(self, game_map, next_three=None, score=None, real_move=None, fig=None, ax=None, call_show=True, move_probs=None):
         self.game_map = game_map
         self.next_three = next_three
         self.score = score
         self.real_move = real_move
+        self.move_probs = move_probs
         if fig == None and ax == None:
             self.fig, self.ax = self.get_ax()
         else:
@@ -129,34 +159,45 @@ class Board:
                     self.plotFilledCircle(
                         [i+1, j], Index2Color[game_map[i][j]], self.ax)
 
-    def plotmove(self, start, end, text):
-        self.ax.add_patch(self.plotRetangle(start))
-        self.ax.add_patch(self.plotRetangle(end))
-        self.plotLine_index(start, end, '->', text)
+    def plot_path(self, path,prob = None):
+        def transform(x,y):
+            return ((y+0.5)/10, (x+0.5+1)/10)
+        path = [transform(x,y) for x,y in path]
+        verts = path
+        codes = [Path.MOVETO] + [Path.LINETO]*(len(path)-1)
+        path = Path(verts, codes)
+        patch = FancyArrowPatch(path=path,
+                        arrowstyle='-|>',
+                        mutation_scale=20,
+                        lw=2,
+                        color=path_color,
+                        )
+        if prob is not None:
+            props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+            self.ax.text(verts[0][0],verts[0][1],
+                    str(np.round(prob,1)),size=5, bbox=props)
+        self.ax.add_patch(patch)
+                
 
     def drawmove(self):
         if isinstance(self.real_move, np.ndarray):
-            if self.real_move.size == 1:
-                self.real_move = convert_6561_to_coord(self.real_move)
-            t = np.reshape(self.real_move, (2, 2))
-            start = t[0]
-            end = t[1]
+            import gen_colorline_data_tensorflow as m
+            for index, real_move in enumerate(self.real_move):
+                points = m.get_path(self.game_map,real_move)
+                path = [(point.x,point.y) for point in points]
+                prob = self.move_probs[index] if self.move_probs is not None else None
+                self.plot_path(path,prob)
         elif isinstance(self.real_move, Board):
             start = self.real_move.last_move[0]
             end = self.real_move.last_move[1]
-        elif isinstance(self.real_move, (np.int, np.int32, int)):
-            self.real_move = convert_6561_to_coord(self.real_move)
-            t = np.reshape(self.real_move, (2, 2))
-            start = t[0]
-            end = t[1]
+            path = [(start[0],start[1]),(end[0],end[1])]
+        elif isinstance(self.real_move, (np.int32, int)):
+            import gen_colorline_data_tensorflow as m
+            points = m.get_path(self.game_map,self.real_move)
+            path = [(point.x,point.y) for point in points]
+            self.plot_path(path)
         else:
             return
-        self.plotmove(start, end, '')
-
-    def plotLine_index(self, start, end, shape, text):
-        arrow_args = dict(arrowstyle=shape)
-        self.ax.annotate(text, xy=[(end[1]+0.5)/10, (8-end[0]+0.5)/10], xycoords='axes fraction', color='white',
-                         xytext=[(start[1]+0.5)/10, (8-start[0]+0.5)/10],  arrowprops=arrow_args)
 
     def drawnext3(self):
         # draw coming chess grid
@@ -175,8 +216,8 @@ class Board:
         if self.score == None:
             return
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-        self.ax.text((config.BOARD_SIZE-1.5)/10, 0.06, 'score:' +
-                     str(self.score), bbox=props)
+        self.ax.text((config.BOARD_SIZE-1.25)/10, 0.06, 'score:' +
+                     str(self.score),size=9, bbox=props)
 
     @staticmethod
     def plotFilledCircle(xy, color, ax):
@@ -251,10 +292,18 @@ if __name__ == '__main__':
 
     a = np.zeros(shape=(config.BOARD_SIZE, config.BOARD_SIZE,
                         config.INPUT_CHANNEL_SIZE), dtype=np.int32)
-    a[:, 1, 0] = 1
-    a[:, 2, 1] = 1
+    a[1:, 1, 0] = 1
+    a[1:, 2, 1] = 1
 
     # a[:,:,4]=1
-    a[:, :, -1] = 1
-    show_Board(a)
+    a[1:, :, -1] = 1
+    
+    game_map = [[1,0,0,2,0],
+                [3,2,0,1,0],
+                [0,0,1,0,0],
+                [0,0,1,0,0],
+                [0,0,0,0,0]]
+    game_map = np.stack([game_map,game_map,game_map,game_map],axis=-1)
+    game_map = convert_994_to_9928(game_map)
+    show_Board(game_map,convert_coord_to_6561([1,1,4,2]))
     b = 3

@@ -2,16 +2,16 @@ from tf_agents.trajectories import time_step as ts
 from tf_agents.environments import py_environment, tf_py_environment, tf_environment
 from tf_agents.specs import array_spec, tensor_spec
 import numpy as np
+
+import sys
+sys.path.append('.')
+
 import config
-from utils import platform
-# reduce_gpu_memory_usage()
-if platform() == "Windows":
-    import sys
-    sys.path.append(
-        R'D:\source\repos\ColorLine_DataGeneration\x64\export_pybind')
-    import gen_colorline_data_tensorflow as gen_colorline_data
-else:
-    import gen_colorline_data_tensorflow as gen_colorline_data
+import gen_colorline_data_tensorflow as gen_colorline_data
+print(gen_colorline_data.__doc__)
+
+def observation_and_action_constraint_splitter(observation):
+    return observation['observations'], observation['legal_moves']
 
 
 class ColorLineEnv(py_environment.PyEnvironment):
@@ -19,9 +19,9 @@ class ColorLineEnv(py_environment.PyEnvironment):
     def __init__(self):
         self._action_spec = array_spec.BoundedArraySpec(
             shape=(), dtype=np.int32, minimum=0, maximum=config.POTENTIAL_MOVE_NUM-1, name='action')
-        self._observation_spec = array_spec.BoundedArraySpec(shape=(
-            config.BOARD_SIZE, config.BOARD_SIZE, config.INPUT_CHANNEL_SIZE), dtype=np.int32, minimum=0, maximum=1, name='observation')
-
+        self._observation_spec = {
+            'observations': array_spec.BoundedArraySpec(shape=(config.BOARD_SIZE, config.BOARD_SIZE, config.INPUT_CHANNEL_SIZE), dtype=np.int32, minimum=0, maximum=1, name='observation'),
+            'legal_moves': array_spec.BoundedArraySpec(shape=(config.POTENTIAL_MOVE_NUM,), dtype=np.int32, minimum=0, maximum=1, name='legal_moves')}
         self._state = gen_colorline_data.get_random_start(
             config.LINED_NUM, config.FILL_RATIO)
         self._episode_ended = False
@@ -44,7 +44,8 @@ class ColorLineEnv(py_environment.PyEnvironment):
         '''
         Get observation based on current state
         '''
-        return np.array(gen_colorline_data._994_to_9928(self._state), copy=False)
+        return {'observations': np.array(gen_colorline_data._994_to_9928(self._state), copy=False),
+                'legal_moves': np.array(gen_colorline_data.get_valid_mask(self._state), copy=False).astype(np.int32)}
 
     def _step(self, action):
 
@@ -69,18 +70,9 @@ if __name__ == '__main__':
     import tensorflow as tf
     from tf_agents.environments import py_environment, tf_py_environment, tf_environment, batched_py_environment
     from show import show_Board
-    env = tf_py_environment.TFPyEnvironment(
-        batched_py_environment.BatchedPyEnvironment(
-            [ColorLineEnv()for _ in range(batch_size)],
-            multithreading=False
-        ),
-        isolation=False
-    )
+    from show.utils import parse_9928_to_gamemap_next3_WHC
+    env = ColorLineEnv()
     time_step = env.reset()
-    for i in range(batch_size):
-        show_Board(time_step.observation[i, :])
-    action = tf.zeros(shape=(batch_size,), dtype=tf.int32)
-    next_time_step = env.step(action)
-    for i in range(batch_size):
-        show_Board(next_time_step.observation[i, :])
-    a = 3
+    show_Board(time_step.observation['observations'])
+    game_map = parse_9928_to_gamemap_next3_WHC(time_step.observation['observations'])[0]
+    print([(point.x,point.y)for point in gen_colorline_data.get_path(game_map,3)])
